@@ -11,6 +11,13 @@
   </a>
 </p>
 
+## 🗺️ Roadmap
+
+- explore BigDecimal when it comes out: https://developers.google.com/web/updates/2018/05/bigint
+- some other arbitrary-precision decimal libraries:
+  - https://github.com/MikeMcl/decimal.js/
+  - https://github.com/MikeMcl/big.js/wiki
+  - https://github.com/iriscouch/bigdecimal.js
 
 ## 📙 Learn More
 
