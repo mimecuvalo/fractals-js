@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>Fractals</title>
+    <meta charset="utf-8" />
+    <title>Fractals JS</title>
     <link href="styles.css" rel="stylesheet" type="text/css">
   </head>
   <body>
@@ -9,41 +10,52 @@
     <div id="julia-map"></div>
 
     <button id="help">?</button>
-    <aside>
-      <h4>navigation</h4>
-      <table>
-        <tr>
-          <td><code><strong>switch</strong> fractals</code></td>
-          <td><kbd>space</kbd></td>
-        </tr>
-        <tr>
-          <td><code>unlock julia <strong>morphing</strong><br/>(at lower zoom levels)</code></td>
-          <td><kbd>shift</kbd> + <kbd>mouse <span class="arrow">↔</span></kbd></td>
-        </tr>
-      </table>
+    <aside id="aside" class="initially-open">
+      <div id="aside-inner">
+        <h4 style="text-align: right">a <a target="_blank" rel="noreferrer noopener" href="https://nite-lite.net">night light</a> creation</h4>
+        <h4>navigation</h4>
+        <table>
+          <tr>
+            <td><code><strong>zoom</strong></code></td>
+            <td><kbd>mouse <span class="arrow">↕</span></kbd></kbd></td>
+          </tr>
+          <tr>
+            <td><code><strong>pan</strong></code></td>
+            <td><kbd>click</kbd> + <kbd> mouse <span class="arrow">↔↕</span></kbd></kbd></td>
+          </tr>
+          <tr>
+            <td><code><strong>switch</strong> fractals</code></td>
+            <td><kbd>space</kbd></td>
+          </tr>
+          <tr>
+            <td><code>unlock julia <strong>morphing</strong><br/>(at lower zoom levels)</code></td>
+            <td><kbd>shift</kbd> + <kbd>mouse <span class="arrow">↔↕</span></kbd></td>
+          </tr>
+        </table>
 
-      <h4>trippy stuff</h4>
-      <table>
-        <tr>
-          <td><code>blobby!</code></td>
-          <td><kbd>alt</kbd> + <kbd>mouse <span class="arrow">↔</span></kbd></td>
-        </tr>
-        <tr>
-          <td><code>color control</code></td>
-          <td><kbd>ctrl</kbd> + <kbd>mouse <span class="arrow">↔</span></kbd></td>
-        </tr>
-      </table>
+        <h4>trippy stuff</h4>
+        <table>
+          <tr>
+            <td><code>blobby!</code></td>
+            <td><kbd>alt</kbd> + <kbd>mouse <span class="arrow">↔</span></kbd></td>
+          </tr>
+          <tr>
+            <td><code>color control</code></td>
+            <td><kbd>ctrl</kbd> + <kbd>mouse <span class="arrow">↔</span></kbd></td>
+          </tr>
+        </table>
 
-      <h4>inspiration</h4>
-      <table>
-        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://acko.net/blog/how-to-fold-a-julia-fractal/">acko.net: How to Fold a Julia Fractal</a></td></tr>
-        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://universefactory.net/test/julia/">Julia Fractal</a></td></tr>
-        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://hvidtfeldts.net/WebGL/webgl.html">Mandlebrot and Julia relationship demo</a></td></tr>
-        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://hvidtfeldts.net/WebGL-DP/webgl.html">Mandelbrot demo</a> (<a target="_blank" rel="noreferrer noopener" href="http://blog.hvidtfeldts.net/index.php/2012/07/double-precision-in-opengl-and-webgl/">blog post</a>)</td></tr>
-        <tr><td><a target="_blank" rel="noreferrer noopener" href="https://www.maa.org/external_archive/devlin/LockhartsLament.pdf">Lockhart's Lament</a></td></tr>
-        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://worrydream.com/KillMath/">WorryDream: Kill Math</a></td></tr>
-        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://acko.net/files/dump/mandelbox.html">acko.net: JS 1.5k Mandelbox</a></td></tr>
-      </table>
+        <h4>inspiration</h4>
+        <table>
+          <tr><td><a target="_blank" rel="noreferrer noopener" href="http://acko.net/blog/how-to-fold-a-julia-fractal/">acko.net: How to Fold a Julia Fractal</a></td></tr>
+          <tr><td><a target="_blank" rel="noreferrer noopener" href="http://universefactory.net/test/julia/">Julia Fractal</a></td></tr>
+          <tr><td><a target="_blank" rel="noreferrer noopener" href="http://hvidtfeldts.net/WebGL/webgl.html">Mandlebrot and Julia relationship demo</a></td></tr>
+          <tr><td><a target="_blank" rel="noreferrer noopener" href="http://hvidtfeldts.net/WebGL-DP/webgl.html">Mandelbrot demo</a> (<a target="_blank" rel="noreferrer noopener" href="http://blog.hvidtfeldts.net/index.php/2012/07/double-precision-in-opengl-and-webgl/">blog post</a>)</td></tr>
+          <tr><td><a target="_blank" rel="noreferrer noopener" href="https://www.maa.org/external_archive/devlin/LockhartsLament.pdf">Lockhart's Lament</a></td></tr>
+          <tr><td><a target="_blank" rel="noreferrer noopener" href="http://worrydream.com/KillMath/">WorryDream: Kill Math</a></td></tr>
+          <tr><td><a target="_blank" rel="noreferrer noopener" href="http://acko.net/files/dump/mandelbox.html">acko.net: JS 1.5k Mandelbox</a></td></tr>
+        </table>
+      </div>
     </aside>
 
     <script src="fractal.js"></script>

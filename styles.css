@@ -42,17 +42,27 @@ kbd {
 }
 
 aside {
-  display: none;
   position: fixed;
   right: 10px;
   bottom: 10px;
-  height: 500px;
   z-index: 4;
-  width: 300px;
+  width: 0;
+  height: 0;
   cursor: default;
+  transition: all 150ms ease-in;
   background: #fff;
   border-radius: 3px;
-  padding: 10px;
+  padding: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#aside-inner {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  width: 300px;
+  height: 600px;
 }
 
 h4 {
@@ -101,9 +111,12 @@ kbd {
   cursor: pointer;
 }
 
+aside.initially-open,
 aside:hover,
 #help:hover + aside {
-  display: block;
+  width: 300px;
+  height: 600px;
+  padding: 10px;
 }
 
 .arrow {

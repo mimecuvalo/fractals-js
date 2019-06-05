@@ -35,6 +35,10 @@ class FractalUI {
     this.currentFractal.setOptionsAndDraw({
       zoom: 1.5,
     });
+
+    setTimeout(() => {
+      document.getElementById('aside').className = '';
+    }, 5000);
   }
 
   changeFractal() {
