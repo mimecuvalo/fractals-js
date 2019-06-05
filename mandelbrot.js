@@ -3,12 +3,11 @@
 // http://hvidtfeldts.net/WebGL-DP/webgl.html  (code is out-of-date but works if you tweak it)
 // http://hvidtfeldts.net/WebGL/webgl.html
 
-class Mandelbrot extends Fractal {
-  constructor(canvasId) {
-    super(canvasId);
+importScripts('fractal.js');
 
-    const w = this.canvas.width * 0.5;
-    const h = this.canvas.height * 0.5;
+class Mandelbrot extends Fractal {
+  constructor() {
+    super();
 
     this.variables = {
       antiAlias:  { type: '1i',  value: 1 },
@@ -18,7 +17,7 @@ class Mandelbrot extends Fractal {
       iterations: { type: '1i',  value: 128 },
       offsetX:    { type: '1f',  value: 0.0 },
       offsetY:    { type: '1f',  value: 0.0 },
-      pixelSize:  { type: '2fv', value: [1.0 / w, 1.0 / h] },
+      pixelSize:  { type: '2fv', value: [1.0, 1.0] },
       time:       { type: '1f',  value: Date.now() / 1000 },
       zoom:       { type: '1f',  value: 1.5 },
     };
@@ -29,11 +28,21 @@ class Mandelbrot extends Fractal {
        1.0, -1.0,  0.0,
       -1.0, -1.0,  0.0,
     ];
+  }
+
+  setCanvas(canvas, height) {
+    super.setCanvas(canvas, height);
+
+    const w = height * 0.5;
+    const h = height * 0.5;
+    this.variables.pixelSize = { type: '2fv', value: [1.0 / w, 1.0 / h] };
 
     this.glDrawArraysMode = this.gl.TRIANGLE_STRIP;
 
     this.buildProgram(this.vertexShader, this.doublePrecisionMath + this.fragmentShader);
     this.assignAttribOffsets(0, 3, { position: 0 });
+
+    postMessage(this.variables);
   }
 
   preDraw() {
@@ -192,3 +201,15 @@ class Mandelbrot extends Fractal {
     `;
   }
 }
+
+const instance = new Mandelbrot();
+onmessage = (e) => {
+  switch (e.data.msg) {
+    case 'init':
+      instance.setCanvas(e.data.canvas, e.data.height);
+      break;
+    default:
+      instance.setOptionsAndDraw(e.data.options);
+      break;
+  }
+};

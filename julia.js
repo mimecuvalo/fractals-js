@@ -1,8 +1,10 @@
 // adapted and greatly modified from http://universefactory.net/test/julia/
 
+importScripts('fractal.js');
+
 class Julia extends Fractal {
-  constructor(canvasId) {
-    super(canvasId);
+  constructor() {
+    super();
 
     this.variables = {
       antiAlias:  { type: '1i',  value: 1 },
@@ -15,9 +17,15 @@ class Julia extends Fractal {
       zoom:       { type: '1f',  value: 1.5 },
     };
     this.buffer = [-1, -1, 1, -1, 1, 1, -1, 1];
+  }
+
+  setCanvas(canvas, height) {
+    super.setCanvas(canvas, height);
 
     this.buildProgram(this.vertexShader, this.fragmentShader);
     this.assignAttribOffsets(0, 2, { p: 0 });
+
+    postMessage(this.variables);
   }
 
   get vertexShader() {
@@ -82,3 +90,15 @@ class Julia extends Fractal {
     `
   }
 }
+
+const instance = new Julia();
+onmessage = (e) => {
+  switch (e.data.msg) {
+    case 'init':
+      instance.setCanvas(e.data.canvas, e.data.height);
+      break;
+    default:
+      instance.setOptionsAndDraw(e.data.options);
+      break;
+  }
+};

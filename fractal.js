@@ -1,12 +1,15 @@
 class Fractal {
-  constructor(canvasId) {
+  constructor() {
     this.variables = {};
+    this.variableLocations = {};
+  }
 
-    this.canvas = document.getElementById(canvasId || 'canvas');
-    this.canvas.width = this.canvas.height = this.canvas.clientHeight;
+  setCanvas(canvas, height) {
+    this.canvas = canvas;
+    this.canvas.width = this.canvas.height = height;
 
     this.gl = this.canvas.getContext('webgl');
-    this.gl.viewport(0, 0, this.canvas.clientHeight, this.canvas.clientHeight);
+    this.gl.viewport(0, 0, height, height);
 
     this.glDrawArraysMode = this.gl.TRIANGLE_FAN;
 
@@ -46,13 +49,14 @@ class Fractal {
   }
 
   dispose() {
-    
+
   }
 
   setOptionsAndDraw(options, opt_mouseX, opt_mouseY) {
     for (const key in options) {
       this.variables[key].value = options[key];
     }
+    postMessage(this.variables);
 
     this.draw();
   }
@@ -64,7 +68,7 @@ class Fractal {
 
     for (const key in this.variables) {
       const variable = this.variables[key];
-      this.gl['uniform' + variable.type](variable.location, variable.value);
+      this.gl['uniform' + variable.type](this.variableLocations[key], variable.value);
     }
     this.gl.drawArrays(this.glDrawArraysMode, 0, 4);
   }
@@ -92,7 +96,7 @@ class Fractal {
 
     for (const key in this.variables) {
       const variable = this.variables[key];
-      variable.location = this.gl.getUniformLocation(prog, key);
+      this.variableLocations[key] = this.gl.getUniformLocation(prog, key);
     }
   }
 

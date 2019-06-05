@@ -26,14 +26,19 @@ class FractalUI {
     this.altPressed = false;
     this.ctrlPressed = false;
 
-    this.fractalOptions = [Julia, Mandelbrot, ComboFractal];
-    this.currentFractalIndex = 0;
-    this.currentFractal = new this.fractalOptions[this.currentFractalIndex];
+    this.fractalOptions = ['julia', 'mandelbrot', 'combo'];
+    this.currentFractalIndex = -1;
+    this.domCanvas = null;
+    this.offscreenCanvas = null;
+    this.currentFractalWorker = null;
+    this.currentVariables = {};
+
+    this.changeFractal();
 
     this.bindEventListeners();
 
-    this.currentFractal.setOptionsAndDraw({
-      zoom: 1.5,
+    this.currentFractalWorker.postMessage({
+      options: { zoom: 1.5 },
     });
 
     setTimeout(() => {
@@ -42,11 +47,25 @@ class FractalUI {
   }
 
   changeFractal() {
-    this.currentFractal.dispose();
+    this.currentFractalWorker && this.currentFractalWorker.terminate();
 
-    document.getElementById('container').innerHtml = '<canvas id="canvas" />';
+    document.getElementById('container').innerHTML = '<canvas id="canvas" />';
+    this.domCanvas = document.getElementById('canvas');
+    this.offscreenCanvas = this.domCanvas.transferControlToOffscreen();
+
     this.currentFractalIndex = (this.currentFractalIndex + 1) % this.fractalOptions.length;
-    this.currentFractal = new this.fractalOptions[this.currentFractalIndex];
+    this.currentFractalWorker = new Worker(`${this.fractalOptions[this.currentFractalIndex]}.js`);
+    this.currentFractalWorker.postMessage(
+      {
+        msg: 'init',
+        canvas: this.offscreenCanvas,
+        height: this.domCanvas.clientHeight,
+      },
+      [this.offscreenCanvas]
+    );
+    this.currentFractalWorker.onmessage = (e) => {
+      this.currentVariables = e.data;
+    };
   }
 
   bindEventListeners() {
@@ -70,7 +89,7 @@ class FractalUI {
   }
 
   getVarValue(variable) {
-    return this.currentFractal.variables[variable].value;
+    return this.currentVariables[variable].value;
   }
 
   onMouseMove(evt) {
@@ -88,7 +107,7 @@ class FractalUI {
     this.mouseX = canvasCenterX;
     this.mouseY = canvasCenterY;
 
-    const isComboFractal = this.currentFractal instanceof ComboFractal;
+    const isComboFractal = this.fractalOptions[this.currentFractalIndex] === 'combo';
     const zoom = this.getVarValue('zoom');
     if (!isComboFractal && !this.isMousePressed) {
       if (this.ZOOM_LIMIT != this.ZOOM_MAX && Date.now() < this.latestMouseWheelEvent + 1000) {
@@ -113,24 +132,27 @@ class FractalUI {
         const PAN_INTERVAL = zoom * this.PANNING_SPEED * 0.1;
         offsetX += deltaX * PAN_INTERVAL;
         offsetY += -1 * deltaY * PAN_INTERVAL;
-        this.currentFractal.setOptionsAndDraw({ offsetX, offsetY });
+        this.currentFractalWorker.postMessage({ options: { offsetX, offsetY } });
       } else if (this.altPressed) {
         blobSize += directionX * 0.01;
         blobSize = Math.max(Math.min(blobSize, 2.0), 0);
-        this.currentFractal.setOptionsAndDraw({ blobSize });
+        this.currentFractalWorker.postMessage({ options: { blobSize } });
       } else if (this.ctrlPressed) {
         colorControl += directionX * 0.1;
         colorControl = Math.max(Math.min(colorControl, 1000.0), 0);
-        this.currentFractal.setOptionsAndDraw({ colorControl });
+        this.currentFractalWorker.postMessage({ options: { colorControl } });
       } else if (shiftPressed && zoom < 1.0) {
         this.x += directionX * this.x * zoom * 0.005;  // x is more sensitive so dampen it more
         this.y += directionY * this.y * zoom * 0.01;
-        this.currentFractal.setOptionsAndDraw({ center: [this.x, this.y] });
+        this.currentFractalWorker.postMessage({ options: { center: [this.x, this.y] } });
       } else if (!shiftPressed && (zoom >= this.ZOOM_LIMIT || isComboFractal)) {
         this.x = (canvasCenterX * this.RETINA_RATIO / canvas.width * 2 - 1) / this.MORPHING_SPEED;
         this.y = (1 - canvasCenterY * this.RETINA_RATIO / canvas.height * 2) / this.MORPHING_SPEED;
-        this.currentFractal.setOptionsAndDraw({ center: [this.x, this.y] },
-            this.mouseX * this.RETINA_RATIO, this.mouseY * this.RETINA_RATIO);
+        this.currentFractalWorker.postMessage({
+          options: { center: [this.x, this.y] },
+          mouseX: this.mouseX * this.RETINA_RATIO,
+          mouseY: this.mouseY * this.RETINA_RATIO
+        });
       }
    });
   }
@@ -149,12 +171,12 @@ class FractalUI {
       if (this.altPressed) {
         blobSize += -1 * evt.deltaY * 0.001;
         blobSize = Math.max(Math.min(blobSize, 2.0), 0);
-        this.currentFractal.setOptionsAndDraw({ blobSize });
+        this.currentFractalWorker.postMessage({ options: { blobSize } });
         return;
       } else if (this.ctrlPressed) {
         colorControl += evt.deltaY * 0.1;
         colorControl = Math.max(Math.min(colorControl, 1000.0), 0);
-        this.currentFractal.setOptionsAndDraw({ colorControl });
+        this.currentFractalWorker.postMessage({ options: { colorControl } });
         return;
       }
 
@@ -184,12 +206,14 @@ class FractalUI {
         antiAlias = 2;
       }
 
-      this.currentFractal.setOptionsAndDraw({
-        antiAlias,
-        zoom,
-        iterations,
-        offsetX,
-        offsetY,
+      this.currentFractalWorker.postMessage({
+        options: {
+          antiAlias,
+          zoom,
+          iterations,
+          offsetX,
+          offsetY,
+        }
       });
    });
   }
@@ -212,19 +236,19 @@ class FractalUI {
         break;
       case 'ArrowLeft':
         offsetX -= PAN_INTERVAL;
-        this.currentFractal.setOptionsAndDraw({ offsetX });
+        this.currentFractalWorker.postMessage({ options: { offsetX } });
         break;
       case 'ArrowRight':
         offsetX += PAN_INTERVAL;
-        this.currentFractal.setOptionsAndDraw({ offsetX });
+        this.currentFractalWorker.postMessage({ options: { offsetX } });
         break;
       case 'ArrowDown':
         offsetY -= PAN_INTERVAL;
-        this.currentFractal.setOptionsAndDraw({ offsetY });
+        this.currentFractalWorker.postMessage({ options: { offsetY } });
         break;
       case 'ArrowUp':
         offsetY += PAN_INTERVAL;
-        this.currentFractal.setOptionsAndDraw({ offsetY });
+        this.currentFractalWorker.postMessage({ options: { offsetY } });
         break;
       case ' ':
         this.changeFractal();
