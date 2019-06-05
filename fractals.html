@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Fractals</title>
+    <link href="styles.css" rel="stylesheet" type="text/css">
+  </head>
+  <body>
+    <div id="container"><canvas id="canvas" /></div>
+    <div id="julia-map"></div>
+
+    <button id="help">?</button>
+    <aside>
+      <h4>navigation</h4>
+      <table>
+        <tr>
+          <td><code><strong>switch</strong> fractals</code></td>
+          <td><kbd>space</kbd></td>
+        </tr>
+        <tr>
+          <td><code>unlock julia <strong>morphing</strong><br/>(at lower zoom levels)</code></td>
+          <td><kbd>shift</kbd> + <kbd>mouse <span class="arrow">↔</span></kbd></td>
+        </tr>
+      </table>
+
+      <h4>trippy stuff</h4>
+      <table>
+        <tr>
+          <td><code>blobby!</code></td>
+          <td><kbd>alt</kbd> + <kbd>mouse <span class="arrow">↔</span></kbd></td>
+        </tr>
+        <tr>
+          <td><code>color control</code></td>
+          <td><kbd>ctrl</kbd> + <kbd>mouse <span class="arrow">↔</span></kbd></td>
+        </tr>
+      </table>
+
+      <h4>inspiration</h4>
+      <table>
+        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://acko.net/blog/how-to-fold-a-julia-fractal/">acko.net: How to Fold a Julia Fractal</a></td></tr>
+        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://universefactory.net/test/julia/">Julia Fractal</a></td></tr>
+        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://hvidtfeldts.net/WebGL/webgl.html">Mandlebrot and Julia relationship demo</a></td></tr>
+        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://hvidtfeldts.net/WebGL-DP/webgl.html">Mandelbrot demo</a> (<a target="_blank" rel="noreferrer noopener" href="http://blog.hvidtfeldts.net/index.php/2012/07/double-precision-in-opengl-and-webgl/">blog post</a>)</td></tr>
+        <tr><td><a target="_blank" rel="noreferrer noopener" href="https://www.maa.org/external_archive/devlin/LockhartsLament.pdf">Lockhart's Lament</a></td></tr>
+        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://worrydream.com/KillMath/">WorryDream: Kill Math</a></td></tr>
+        <tr><td><a target="_blank" rel="noreferrer noopener" href="http://acko.net/files/dump/mandelbox.html">acko.net: JS 1.5k Mandelbox</a></td></tr>
+      </table>
+    </aside>
+
+    <script src="fractal.js"></script>
+    <script src="julia.js"></script>
+    <script src="mandelbrot.js"></script>
+    <script src="combo.js"></script>
+    <script src="ui.js"></script>
+  </body>
+</html>

@@ -1,0 +1,111 @@
+body {
+  padding: 0;
+  margin: 0;
+  text-align: center;
+  overflow: hidden;
+  background-color: #000;
+  cursor: crosshair;
+}
+
+body.grabbing {
+  cursor: move;
+}
+
+#container canvas {
+  height: 200vh;
+  width: 200vh;
+  zoom: 0.5;
+}
+
+#julia-map {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+}
+
+#julia-map canvas {
+  height: 100vh;
+  width: 100vh;
+  zoom: 0.5;
+}
+
+aside,
+code {
+  font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,"Open Sans","Helvetica Neue",sans-serif;
+}
+
+code,
+kbd {
+  font-size: 12px;
+  display: inline-block;
+}
+
+aside {
+  display: none;
+  position: fixed;
+  right: 10px;
+  bottom: 10px;
+  height: 500px;
+  z-index: 4;
+  width: 300px;
+  cursor: default;
+  background: #fff;
+  border-radius: 3px;
+  padding: 10px;
+}
+
+h4 {
+  margin-top: 15px;
+  margin-bottom: 10px;
+  text-align: left;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  text-align: left;
+}
+
+td {
+  padding-bottom: 10px;
+}
+
+aside table td:nth-child(2) {
+  text-align: right;
+  vertical-align: top;
+  color: #666;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+kbd {
+  box-shadow: none;
+  line-height: 14px;
+  padding: 4px 6px;
+  border: none;
+  background-color: #f2f3f5;
+  color: #1b2733;
+  border-radius: 3px;
+}
+
+#help {
+  position: fixed;
+  bottom: 10px;
+  right: 10px;
+  height: 20px;
+  width: 20px;
+  border-radius: 10px;
+  border: 0;
+  color: gray;
+  cursor: pointer;
+}
+
+aside:hover,
+#help:hover + aside {
+  display: block;
+}
+
+.arrow {
+  font-size: 16px;
+}
