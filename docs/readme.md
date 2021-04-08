@@ -18,8 +18,10 @@
   - https://github.com/MikeMcl/decimal.js/
   - https://github.com/MikeMcl/big.js/wiki
   - https://github.com/iriscouch/bigdecimal.js
-- experimentig / trying to figure out WebWorker + OffscreenCanvas:
+  - https://github.com/royNiladri/js-big-decimal
+- experimenting / trying to figure out WebWorker + OffscreenCanvas:
   - branch: https://github.com/mimecuvalo/fractals-js/tree/web_worker_offscreen_canvas
+- try out doing l-system fractal à la: https://js1k.com/2014-dragons/demo/1903
 
 ## 📙 Learn More
 
