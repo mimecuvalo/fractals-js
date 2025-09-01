@@ -196,7 +196,11 @@ class Mandelbrot extends Fractal {
       }
 
       // Convert pixel coordinates to normalized coordinates [-1, 1]
-      let coord = (vec2<f32>(pixel_coord) / vec2<f32>(dimensions) - 0.5) * 2.0;
+      // Flip Y coordinate to match WebGL coordinate system (bottom-left origin)
+      let coord = vec2<f32>(
+        (f32(pixel_coord.x) / f32(dimensions.x) - 0.5) * 2.0,
+        (f32(i32(dimensions.y) - pixel_coord.y) / f32(dimensions.y) - 0.5) * 2.0
+      );
 
       const MAX_ANTI_ALIAS: i32 = 4;
       var v = vec3<f32>(0.0, 0.0, 0.0);

@@ -166,8 +166,12 @@ class Julia extends Fractal {
         return;
       }
 
-      // Convert pixel coordinates to normalized coordinates [-1, 1]
-      let coord = (vec2<f32>(pixel_coord) / vec2<f32>(dimensions) - 0.5) * 2.0;
+      // Convert pixel coordinates to normalized coordinates [-1, 1]  
+      // Flip Y coordinate to match WebGL coordinate system (bottom-left origin)
+      let coord = vec2<f32>(
+        (f32(pixel_coord.x) / f32(dimensions.x) - 0.5) * 2.0,
+        (f32(i32(dimensions.y) - pixel_coord.y) / f32(dimensions.y) - 0.5) * 2.0
+      );
       
       // Calculate z value like the vertex shader did
       let z = uniforms.zoom * coord + vec2<f32>(uniforms.offsetX, uniforms.offsetY);
