@@ -235,7 +235,13 @@ class FractalUI {
       let colorControl = this.getVarValue('colorControl');
 
       if (this.isMousePressed) {
-        const PAN_INTERVAL = zoom * this.PANNING_SPEED * 0.1;
+        // Pixel-exact drag: 1 mouse pixel = 1 image pixel. The complex-plane width
+        // is 2*zoom across `size` device pixels, and the mouse moves in CSS pixels
+        // (device = RETINA_RATIO * CSS), so the per-pixel step is 2*zoom*RETINA/size.
+        // This matches the wheel handler's coordinate mapping exactly, and stays
+        // faithful at any depth because the increment accumulates in double-double.
+        const size = this.currentFractal.fullSize;
+        const PAN_INTERVAL = 2 * zoom * this.RETINA_RATIO / size;
         this._addX(deltaX * PAN_INTERVAL);
         this._addY(-1 * deltaY * PAN_INTERVAL);
         this.drawPreview({ offsetX: this.offsetX, offsetY: this.offsetY });
@@ -282,7 +288,7 @@ class FractalUI {
         const size = this.currentFractal.fullSize;
         let newZoom = zoom * Math.exp(evt.deltaY * 0.01);
         newZoom = Math.min(this.ZOOM_MAX, Math.max(this.ZOOM_MIN, newZoom));
-        if (this.mouseX >= 0 && this.mouseX <= size / this.RETINA_RATIO && zoom > this.ZOOM_MIN_PANNING) {
+        if (this.mouseX >= 0 && this.mouseX <= size / this.RETINA_RATIO) {
           const cx = this.mouseX * this.RETINA_RATIO / size * 2 - 1;
           const cy = 1 - this.mouseY * this.RETINA_RATIO / size * 2;
           this._addX(cx * (zoom - newZoom));
@@ -327,9 +333,10 @@ class FractalUI {
         // Halving is exact in double-double.
         this.offsetX *= 0.5; this.offsetXlo *= 0.5;
         this.offsetY *= 0.5; this.offsetYlo *= 0.5;
-      } else if (this.mouseX >= 0 && this.mouseX <= size / this.RETINA_RATIO && zoom > this.ZOOM_MIN_PANNING) {
+      } else if (this.mouseX >= 0 && this.mouseX <= size / this.RETINA_RATIO) {
         // Pan toward the cursor as we zoom. The increment is ~zoom, which is far
-        // below the center's float64 ULP at deep zoom — hence double-double.
+        // below the center's float64 ULP at deep zoom — hence double-double, which
+        // keeps the cursor anchored at any depth (no ZOOM_MIN_PANNING cutoff).
         const PAN_INTERVAL = zoom * this.PANNING_SPEED;
         this._addX(direction * PAN_INTERVAL * (this.mouseX * this.RETINA_RATIO / size * 2 - 1));
         this._addY(direction * PAN_INTERVAL * (1 - this.mouseY * this.RETINA_RATIO / size * 2));
