@@ -122,3 +122,39 @@ aside:hover,
 .arrow {
   font-size: 16px;
 }
+
+#hud {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  pointer-events: none;
+  line-height: 1.5;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+#hud span {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+#hud-copy {
+  pointer-events: auto;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.6);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: inherit;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+#hud-copy:hover {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}

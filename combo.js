@@ -9,19 +9,27 @@ class ComboFractal extends Mandelbrot {
   setOptionsAndDraw(options, opt_mouseX, opt_mouseY) {
     super.setOptionsAndDraw(options);
 
-    if (options['center']) {
-      options['center'] = [
-        this.variables['offsetX'].value + (opt_mouseX / this.canvas.width * 2 - 1) * this.variables['zoom'].value - 1.0,
-        this.variables['offsetY'].value + (1 - opt_mouseY / this.canvas.height * 2) * this.variables['zoom'].value
+    // Reconstitute doubles from hi/lo uniform pairs for Julia calculations
+    const offsetX = this.variables['offsetX'].value;
+    const offsetY = this.variables['offsetY'].value;
+    const zoom = this.variables['zoom'].value;
+    const offsetXVal = offsetX[0] + offsetX[1];
+    const offsetYVal = offsetY[0] + offsetY[1];
+    const zoomVal = zoom[0] + zoom[1];
+
+    const juliaOptions = {...options};
+    if (juliaOptions['center']) {
+      juliaOptions['center'] = [
+        offsetXVal + (opt_mouseX / this.canvas.width * 2 - 1) * zoomVal - 1.0,
+        offsetYVal + (1 - opt_mouseY / this.canvas.height * 2) * zoomVal
       ];
     }
-    options['offsetX'] = 0;
-    options['offsetY'] = 0;
-    if (options['zoom']) {
-      options['zoom'] *= 100;
-      options['zoom'] = Math.min(1.5, options['zoom']);
+    juliaOptions['offsetX'] = 0;
+    juliaOptions['offsetY'] = 0;
+    if (juliaOptions['zoom']) {
+      juliaOptions['zoom'] = Math.min(1.5, juliaOptions['zoom'] * 100);
     }
-    this.julia.setOptionsAndDraw(options);
+    this.julia.setOptionsAndDraw(juliaOptions);
   }
 
   dispose() {

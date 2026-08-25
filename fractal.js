@@ -3,10 +3,14 @@ class Fractal {
     this.variables = {};
 
     this.canvas = document.getElementById(canvasId || 'canvas');
-    this.canvas.width = this.canvas.height = this.canvas.clientHeight;
+    this.fullSize = this.canvas.clientHeight;
+    this.canvas.width = this.canvas.height = this.fullSize;
 
-    this.gl = this.canvas.getContext('webgl');
-    this.gl.viewport(0, 0, this.canvas.clientHeight, this.canvas.clientHeight);
+    this.gl = this.canvas.getContext('webgl2');
+    this.gl.viewport(0, 0, this.fullSize, this.fullSize);
+
+    // Enable float texture support (needed for perturbation reference orbit textures)
+    this.gl.getExtension('EXT_color_buffer_float');
 
     this.glDrawArraysMode = this.gl.TRIANGLE_FAN;
 
@@ -45,8 +49,22 @@ class Fractal {
     };
   }
 
+  // Split a JS float64 into two float32 values (hi, lo) such that hi + lo ≈ value.
+  // This preserves the full double-precision value across two single-precision uniforms.
+  splitFloat64(value) {
+    const hi = Math.fround(value);
+    const lo = value - hi;
+    return [hi, lo];
+  }
+
+  setPreview(on) {
+    const size = on ? Math.floor(this.fullSize / 4) : this.fullSize;
+    this.canvas.width = this.canvas.height = size;
+    this.gl.viewport(0, 0, size, size);
+  }
+
   dispose() {
-    
+
   }
 
   setOptionsAndDraw(options, opt_mouseX, opt_mouseY) {
@@ -130,43 +148,73 @@ class Fractal {
   }
 
   get doublePrecisionMath() {
-    return `
+    return `#version 300 es
     precision highp float;
 
-    // Double emulation based on GLSL Mandelbrot Shader by Henry Thasler (www.thasler.org/blog)
+    // Double-single emulation using Dekker's algorithms.
+    // Represents extended-precision numbers as vec2(high, low) pairs.
+    // Based on: https://github.com/iskandarov-egor/mandelset
     //
-    // Emulation based on Fortran-90 double-single package. See http://crd.lbl.gov/~dhbailey/mpdist/
-    // Substract: res = ds_add(a, b) => res = a + b
-    vec2 add(vec2 dsa, vec2 dsb) {
-      vec2 dsc;
-      float t1, t2, e;
+    // The 'one' uniform (always 1.0) prevents the GLSL compiler from
+    // optimizing away error-correction terms that look like no-ops.
+    uniform float one;
 
-      t1 = dsa.x + dsb.x;
-      e = t1 - dsa.x;
-      t2 = ((dsb.x - e) + (dsa.x - (t1 - e))) + dsa.y + dsb.y;
-
-      dsc.x = t1 + t2;
-      dsc.y = t2 - (dsc.x - t1);
-      return dsc;
+    // Veltkamp split for single-precision float (24-bit mantissa).
+    // Splits float into high and low parts for exact multiplication.
+    vec2 splitFloat(float x) {
+      float c = 4097.0; // 2^12 + 1, correct for 24-bit mantissa
+      float y = c * x;
+      float b = x - y;
+      float hi = y * one + b;
+      float lo = x - hi;
+      return vec2(hi, lo);
     }
 
-    // Substract: res = ds_sub(a, b) => res = a - b
-    vec2 sub(vec2 dsa, vec2 dsb) {
-      vec2 dsc;
-      float e, t1, t2;
-
-      t1 = dsa.x - dsb.x;
-      e = t1 - dsa.x;
-      t2 = ((-dsb.x - e) + (dsa.x - (t1 - e))) + dsa.y - dsb.y;
-
-      dsc.x = t1 + t2;
-      dsc.y = t2 - (dsc.x - t1);
-      return dsc;
+    // Fast2Sum: error-free floating-point addition.
+    // Requires |a| >= |b| for correctness.
+    vec2 fast2sum(float a, float b) {
+      if (abs(a) < abs(b)) {
+        float t = a; a = b; b = t;
+      }
+      float s = a + b;
+      float z = s - one * a;
+      float e = b - one * z;
+      return vec2(s, e);
     }
 
-    // Compare: res = -1 if a < b
-    //              =  0 if a == b
-    //              =  1 if a > b
+    // Dekker's exact multiplication of two floats.
+    // Returns (product, error) such that a*b = product + error exactly.
+    vec2 dekkerMul(float a, float b) {
+      vec2 x = splitFloat(a);
+      vec2 y = splitFloat(b);
+      float p = a * b;
+      float err = -p + x.x * y.x;
+      err = err + x.x * y.y;
+      err = err + x.y * y.x;
+      err = err + x.y * y.y;
+      return vec2(p, err);
+    }
+
+    // Double-single addition: res = a + b
+    vec2 add(vec2 a, vec2 b) {
+      vec2 r;
+      float s;
+      if (abs(a.x) >= abs(b.x)) {
+        r = fast2sum(a.x, b.x);
+        s = ((r.y + b.y) * one + a.y);
+      } else {
+        r = fast2sum(b.x, a.x);
+        s = ((r.y + a.y) * one + b.y);
+      }
+      return fast2sum(r.x, s);
+    }
+
+    // Double-single subtraction: res = a - b
+    vec2 sub(vec2 a, vec2 b) {
+      return add(a, vec2(-b.x, -b.y));
+    }
+
+    // Compare: res = -1 if a < b, 0 if a == b, 1 if a > b
     float cmp(vec2 dsa, vec2 dsb) {
       if (dsa.x < dsb.x) {
         return -1.;
@@ -183,40 +231,18 @@ class Fractal {
       }
     }
 
-    // Multiply: res = ds_mul(a, b) => res = a * b
-    vec2 mul(vec2 dsa, vec2 dsb) {
-      vec2 dsc;
-      float c11, c21, c2, e, t1, t2;
-      float a1, a2, b1, b2, cona, conb, split = 8193.;
-
-      cona = dsa.x * split;
-      conb = dsb.x * split;
-      a1 = cona - (cona - dsa.x);
-      b1 = conb - (conb - dsb.x);
-      a2 = dsa.x - a1;
-      b2 = dsb.x - b1;
-
-      c11 = dsa.x * dsb.x;
-      c21 = a2 * b2 + (a2 * b1 + (a1 * b2 + (a1 * b1 - c11)));
-
-      c2 = dsa.x * dsb.y + dsa.y * dsb.x;
-
-      t1 = c11 + c2;
-      e = t1 - c11;
-      t2 = dsa.y * dsb.y + ((c2 - e) + (c11 - (t1 - e))) + c21;
-
-      dsc.x = t1 + t2;
-      dsc.y = t2 - (dsc.x - t1);
-
-      return dsc;
+    // Double-single multiplication using Dekker's algorithm: res = a * b
+    vec2 mul(vec2 a, vec2 b) {
+      vec2 c = dekkerMul(a.x, b.x);
+      float p1 = a.x * b.y;
+      float p2 = a.y * b.x;
+      c.y = c.y + one * (p1 + p2);
+      return fast2sum(c.x, c.y);
     }
 
-    // create double-single number from float
+    // Create double-single number from float
     vec2 set(float a) {
-      vec2 z;
-      z.x = a;
-      z.y = 0.0;
-      return z;
+      return vec2(a, 0.0);
     }
 
     float rand(vec2 co){
@@ -228,7 +254,7 @@ class Fractal {
       return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
     }
 
-    // double complex multiplication
+    // Double-complex multiplication: (a.re + a.im*i) * (b.re + b.im*i)
     vec4 dcMul(vec4 a, vec4 b) {
       return vec4(sub(mul(a.xy, b.xy), mul(a.zw, b.zw)), add(mul(a.xy, b.zw), mul(a.zw, b.xy)));
     }
@@ -237,7 +263,7 @@ class Fractal {
       return vec4(add(a.xy, b.xy), add(a.zw, b.zw));
     }
 
-    // Length of double complex
+    // Length squared of double-complex
     vec2 dcLength(vec4 a) {
       return add(mul(a.xy, a.xy), mul(a.zw, a.zw));
     }
@@ -246,9 +272,9 @@ class Fractal {
       return vec4(a.x, 0., a.y, 0.);
     }
 
-    // Multiply double-complex with double
+    // Multiply double-complex with double-single scalar
     vec4 dcMul(vec4 a, vec2 b) {
-      return vec4(mul(a.xy, b), mul(a.wz, b));
+      return vec4(mul(a.xy, b), mul(a.zw, b));
     }
     `;
   }
