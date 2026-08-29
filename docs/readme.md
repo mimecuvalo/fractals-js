@@ -1,5 +1,5 @@
 <h1 align="center">
-  🔮 FractalsJS - Julia / Mandelbrot Fractal Explorer
+  🔮 Julia / Mandelbrot Fractal Explorer
 </h1>
 <blockquote align="center">
   Zoom and explore infinity!
