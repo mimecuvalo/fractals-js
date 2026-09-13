@@ -1,6 +1,9 @@
 // adapted and greatly modified from http://universefactory.net/test/julia/
 
 class Julia extends Fractal {
+  static PROBE_GRID = 12;
+  static PROBE_MARGIN = 8;
+
   constructor(canvasId) {
     super(canvasId);
 
@@ -13,6 +16,7 @@ class Julia extends Fractal {
       blobSize:   { type: '1f',  value: 2.0 },
       center:     { type: '2fv', value: [0.0, 0.0] },
       colorControl:  { type: '1f',  value: 2.0 },
+      colorOffset:   { type: '1f',  value: 0.0 },
       iterations: { type: '1i',  value: 128 },
       offsetX:    { type: '2fv', value: [0.0, 0.0] },
       offsetY:    { type: '2fv', value: [0.0, 0.0] },
@@ -64,6 +68,7 @@ class Julia extends Fractal {
     // Wide zoom: iterate directly in double-single. Deep zoom: single-float perturbation.
     if (!p.shouldUsePerturbation(zoomVal)) {
       this.variables['usePerturbation'].value = 0;
+      this.updateColorOffset(zoomVal, iterations);
       return;
     }
 
@@ -86,6 +91,113 @@ class Julia extends Fractal {
     } else {
       this.variables['usePerturbation'].value = 0;
     }
+
+    // After usePerturbation and refOffset settle: the probe has to run the same
+    // recurrence the shader is about to.
+    this.updateColorOffset(zoomVal, iterations);
+  }
+
+  // Slide the palette window onto the escape-time floor of the frame being drawn.
+  //
+  // Measured on the CPU rather than derived from the zoom level: the floor climbs
+  // like log(1/zoom) divided by log|multiplier| at the nearest repelling point, and
+  // that multiplier is a property of the Julia constant, so no fixed formula holds
+  // across different c. A coarse grid probe costs well under a millisecond and is
+  // exact for whichever path the shader takes, because it runs the same recurrence.
+  //
+  // It runs at every zoom rather than behind a threshold, because a threshold would
+  // step the whole palette the moment you crossed it - the same jump this palette was
+  // fixed to stop. Running always keeps the offset continuous, and costs nothing at
+  // wide zoom: each sample loop is bounded by the best floor found so far, so once
+  // one sample escapes immediately - which anything short of a view buried inside the
+  // set does - every later sample exits on its first iteration.
+  updateColorOffset(zoom, iterations) {
+    const floor = this.variables['usePerturbation'].value === 1
+      ? this.probeFloorPerturb(zoom, iterations)
+      : this.probeFloorDirect(zoom, iterations);
+
+    // Nothing in view escaped, so there is no exterior gradient to sit on; leave the
+    // window at zero and let the interior read as solid white the way it always has.
+    if (floor < 0) {
+      this.variables['colorOffset'].value = 0.0;
+      return;
+    }
+
+    // Back off by a margin: the probe grid is far coarser than the pixel grid, so it
+    // can miss the genuinely fastest-escaping pocket in view. Starting slightly below
+    // the measured floor costs a sliver of the ramp and keeps those pixels coloured
+    // instead of clamping them to black.
+    this.variables['colorOffset'].value = Math.max(0, floor - Julia.PROBE_MARGIN);
+  }
+
+  // Direct double-precision probe, mirroring niterDP: escape once |z| > blobSize.
+  probeFloorDirect(zoom, iterations) {
+    const c = this.variables['center'].value;
+    const cRe = c[0], cIm = c[1];
+    const escape = this.variables['blobSize'].value ** 2;
+    const offsetX = this.variables['offsetX'].value;
+    const offsetY = this.variables['offsetY'].value;
+    const czRe = offsetX[0] + offsetX[1];
+    const czIm = offsetY[0] + offsetY[1];
+
+    let floor = iterations;
+    for (const [sx, sy] of Julia.probeGrid()) {
+      let zx = czRe + sx * zoom;
+      let zy = czIm + sy * zoom;
+      let i = 0;
+      for (; i < floor; i++) {
+        const x2 = zx * zx, y2 = zy * zy;
+        if (x2 + y2 > escape) break;
+        zy = 2 * zx * zy + cIm;
+        zx = x2 - y2 + cRe;
+      }
+      if (i < floor) floor = i;
+    }
+    return floor < iterations ? floor : -1;
+  }
+
+  // Perturbation probe, mirroring niterPerturb: iterate the delta recurrence against
+  // the same reference orbit the shader samples, and escape on |Z + delta|^2 as it
+  // does. Reading the orbit through orbitRe/orbitIm reconstitutes the float32 hi/lo
+  // pair exactly as the texelFetch does, so the probe sees the shader's numbers.
+  probeFloorPerturb(zoom, iterations) {
+    const p = this.perturbation;
+    const escape = this.variables['blobSize'].value;
+    const refOffsetX = this.variables['refOffsetX'].value;
+    const refOffsetY = this.variables['refOffsetY'].value;
+    const limit = Math.min(iterations, p.referenceOrbitLength);
+
+    let floor = limit;
+    for (const [sx, sy] of Julia.probeGrid()) {
+      let dx = sx * zoom + refOffsetX;
+      let dy = sy * zoom + refOffsetY;
+      let i = 0;
+      for (; i < floor; i++) {
+        const Zx = p.orbitRe(i), Zy = p.orbitIm(i);
+        const zx = Zx + dx, zy = Zy + dy;
+        if (zx * zx + zy * zy > escape) break;
+        const ndx = 2 * (Zx * dx - Zy * dy) + (dx * dx - dy * dy);
+        const ndy = 2 * (Zx * dy + Zy * dx) + 2 * dx * dy;
+        dx = ndx;
+        dy = ndy;
+      }
+      if (i < floor) floor = i;
+    }
+    return floor < limit ? floor : -1;
+  }
+
+  // Screen-space sample points in [-1, 1], matching the shader's `coord`.
+  static probeGrid() {
+    if (Julia._probeGrid) return Julia._probeGrid;
+    const n = Julia.PROBE_GRID;
+    const pts = [];
+    for (let gy = 0; gy < n; gy++) {
+      for (let gx = 0; gx < n; gx++) {
+        pts.push([2 * gx / (n - 1) - 1, 2 * gy / (n - 1) - 1]);
+      }
+    }
+    Julia._probeGrid = pts;
+    return pts;
   }
 
   setOptionsAndDraw(options, ...args) {
@@ -119,6 +231,7 @@ class Julia extends Fractal {
     uniform int antiAlias;
     uniform float blobSize;
     uniform float colorControl;
+    uniform float colorOffset;
     uniform vec2 center;
     uniform vec2 zoom;
     uniform vec2 offsetX;
@@ -127,13 +240,20 @@ class Julia extends Fractal {
     in vec2 coord;
     out vec4 fragColor;
 
-    // Palette scale. The colour ramp below is expressed in units of
-    // escapeValue/COLOR_SCALE, so this - and NOT the iteration budget - decides which
-    // escape times land in the red/yellow/green/blue/white bands. Normalising by the
-    // iteration count instead would repaint the whole image whenever that
-    // budget changed (e.g. 128 on first draw, 2000 after the first zoom), which is
-    // exactly the "colours jump on the first zoom" bug. Anything slower than
-    // COLOR_SCALE saturates to white, matching the old iterations=128 look.
+    // Palette window. The colour ramp below is expressed in units of
+    // (escapeValue - colorOffset)/COLOR_SCALE, so these two - and NOT the iteration
+    // budget - decide which escape times land in the red/yellow/green/blue/white
+    // bands. Normalising by the iteration count instead would repaint the whole
+    // image whenever that budget changed (e.g. 128 on first draw, 2000 after the
+    // first zoom), which is exactly the "colours jump on the first zoom" bug.
+    //
+    // COLOR_SCALE is the width of the window. Escape times inside a Julia view span
+    // only ~45 iterations no matter how deep you are, but the *floor* of that span
+    // climbs as you zoom in (~0 at scale 1.5, ~137 at 1e-6, ~378 at 1e-16), because
+    // every visible point is closer to the set. A window pinned at zero therefore
+    // runs off the white end and the whole frame goes flat. colorOffset slides the
+    // window to sit on the floor of the frame that is actually being drawn; preDraw
+    // measures it, and leaves it at 0 for wide views so they look exactly as before.
     const float COLOR_SCALE = 128.0;
 
     // Perturbation uniforms (deep-zoom path)
@@ -228,7 +348,7 @@ class Julia extends Fractal {
           if (y >= antiAlias) break;
           vec2 cor = coord + vec2(x, y) * ard;
           float raw = (usePerturbation == 1) ? niterPerturb(cor) : niterDP(cor);
-          float a = raw / COLOR_SCALE;
+          float a = (raw - colorOffset) / COLOR_SCALE;
           // Accumulate in linear space for gamma-correct blending
           vec3 srgb = color(a);
           v += pow(max(srgb, 0.0), vec3(2.2));
