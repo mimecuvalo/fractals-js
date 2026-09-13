@@ -6,13 +6,41 @@ class Fractal {
     this.fullSize = this.canvas.clientHeight;
     this.canvas.width = this.canvas.height = this.fullSize;
 
-    this.gl = this.canvas.getContext('webgl2');
+    // preserveDrawingBuffer lets a frame be painted a tile at a time across several
+    // animation frames without the compositor wiping the tiles already drawn.
+    //
+    // antialias:false because the default framebuffer is otherwise multisampled,
+    // which both makes it an illegal blit target for the preview pass and spends
+    // time smoothing edges the fragment shader is already supersampling itself.
+    this.gl = this.canvas.getContext('webgl2', {
+      preserveDrawingBuffer: true,
+      antialias: false,
+    });
     this.gl.viewport(0, 0, this.fullSize, this.fullSize);
+
+    // Preview renders go through an off-screen buffer and get blitted up, so the
+    // canvas itself never resizes and never blanks.
+    this.previewMode = false;
+    this.previewSize = Math.max(1, Math.floor(this.fullSize / 4));
+
+    // Progressive tiling state: grid x grid tiles, adapted to keep frames short.
+    // Starts split rather than whole: the first full-resolution frame after a deep
+    // zoom is exactly the one that can take seconds, and adapting only happens after
+    // a frame has already been drawn.
+    this.tileGrid = 4;
+    this._tileQueue = null;
+    this._tileRaf = null;
+    this._tileTimer = null;
 
     // Enable float texture support (needed for perturbation reference orbit textures)
     this.gl.getExtension('EXT_color_buffer_float');
 
     this.glDrawArraysMode = this.gl.TRIANGLE_FAN;
+
+    // Built once, up front. Creating it lazily meant binding a texture mid-frame,
+    // which silently displaced the reference orbit bound to TEXTURE0 and left the
+    // shader sampling nothing.
+    this.createPreviewTarget();
 
     this.draw = this.throttle(this.drawInternal, 33);
   }
@@ -58,13 +86,23 @@ class Fractal {
   }
 
   setPreview(on) {
-    const size = on ? Math.floor(this.fullSize / 4) : this.fullSize;
-    this.canvas.width = this.canvas.height = size;
-    this.gl.viewport(0, 0, size, size);
+    this.previewMode = on;
   }
 
   dispose() {
+    this.cancelTiles();
+  }
 
+  cancelTiles() {
+    if (this._tileRaf !== null) {
+      cancelAnimationFrame(this._tileRaf);
+      this._tileRaf = null;
+    }
+    if (this._tileTimer !== null && this._tileTimer !== undefined) {
+      clearTimeout(this._tileTimer);
+      this._tileTimer = null;
+    }
+    this._tileQueue = null;
   }
 
   setOptionsAndDraw(options, opt_mouseX, opt_mouseY) {
@@ -79,12 +117,161 @@ class Fractal {
     if (this.preDraw) {
       this.preDraw();
     }
+    this.uploadUniforms();
 
+    if (this.previewMode) {
+      this.drawPreviewPass();
+    } else {
+      this.drawProgressive();
+    }
+  }
+
+  uploadUniforms() {
     for (const key in this.variables) {
       const variable = this.variables[key];
       this.gl['uniform' + variable.type](variable.location, variable.value);
     }
-    this.gl.drawArrays(this.glDrawArraysMode, 0, 4);
+  }
+
+  // Render the whole canvas in one draw call, for views cheap enough not to need
+  // splitting.
+  drawAll() {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.fullSize, this.fullSize);
+    gl.drawArrays(this.glDrawArraysMode, 0, 4);
+  }
+
+  // Quarter-resolution pass for interactive motion. It renders into an off-screen
+  // buffer and is blitted up to the canvas, so the canvas keeps its full size: a
+  // resize would clear it, and the blurry preview is exactly what we want left on
+  // screen underneath while the sharp tiles land on top of it.
+  drawPreviewPass() {
+    const gl = this.gl;
+    const size = this.previewSize;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._previewFbo);
+    gl.viewport(0, 0, size, size);
+    gl.drawArrays(this.glDrawArraysMode, 0, 4);
+
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this._previewFbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.blitFramebuffer(0, 0, size, size,
+                       0, 0, this.fullSize, this.fullSize,
+                       gl.COLOR_BUFFER_BIT, gl.LINEAR);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.fullSize, this.fullSize);
+  }
+
+  createPreviewTarget() {
+    const gl = this.gl;
+    const size = this.previewSize;
+    this._previewTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this._previewTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this._previewFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._previewFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._previewTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  // Progressive rendering.
+  //
+  // A deep-zoom frame at full resolution can take most of a second inside one draw
+  // call. That blocks the main thread for its whole duration, drops input, and on
+  // some drivers trips the GPU watchdog that resets the context and loses the page.
+  // Splitting the frame into scissored tiles spread across animation frames keeps
+  // every individual draw short, so the page stays interactive and the image
+  // refines visibly over the preview instead of arriving in one lurch.
+  drawProgressive() {
+    this.cancelTiles();
+
+    if (this.tileGrid <= 1) {
+      this.drawAll();
+      this.measureAndAdapt();
+      return;
+    }
+
+    const grid = this.tileGrid;
+    const queue = [];
+    for (let ty = 0; ty < grid; ty++) {
+      for (let tx = 0; tx < grid; tx++) queue.push([tx, ty]);
+    }
+    this._tileQueue = queue;
+    this._tileIndex = 0;
+    this._tileWork = 0;
+    this.pumpTiles();
+  }
+
+  pumpTiles() {
+    const gl = this.gl;
+    const queue = this._tileQueue;
+    if (!queue) return;
+
+    const grid = this.tileGrid;
+    const step = Math.ceil(this.fullSize / grid);
+    const frameStart = performance.now();
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.fullSize, this.fullSize);
+    gl.enable(gl.SCISSOR_TEST);
+
+    // Draw at least one tile, then keep going only while the frame budget lasts.
+    do {
+      const [tx, ty] = queue[this._tileIndex++];
+      gl.scissor(tx * step, ty * step, step, step);
+      gl.drawArrays(this.glDrawArraysMode, 0, 4);
+    } while (this._tileIndex < queue.length && performance.now() - frameStart < 8);
+
+    gl.disable(gl.SCISSOR_TEST);
+
+    // Only count time actually spent issuing draws; the idle stretches between
+    // animation frames are not work and must not inflate the estimate.
+    this._tileWork += performance.now() - frameStart;
+
+    if (this._tileIndex < queue.length) {
+      this.scheduleNextTile();
+    } else {
+      this._tileQueue = null;
+      this.measureAndAdapt(this._tileWork);
+    }
+  }
+
+  // Animation frames are the right pacing while the page is on screen. A hidden tab
+  // suspends them entirely, though, which would leave a frame stuck half-drawn, so
+  // fall back to timers there and let the render finish.
+  scheduleNextTile() {
+    if (document.hidden) {
+      this._tileTimer = setTimeout(() => { this._tileTimer = null; this.pumpTiles(); }, 0);
+    } else {
+      this._tileRaf = requestAnimationFrame(() => { this._tileRaf = null; this.pumpTiles(); });
+    }
+  }
+
+  // Pick the tile count for the next frame from what this one actually cost. The
+  // work per pixel varies by orders of magnitude between a shallow view and a deep
+  // one, so this is measured rather than guessed.
+  measureAndAdapt(elapsed) {
+    const gl = this.gl;
+    if (elapsed === undefined) {
+      // Single-draw path: time it with a pixel read, which forces the GPU to finish.
+      const t0 = performance.now();
+      const px = new Uint8Array(4);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      elapsed = performance.now() - t0;
+    }
+
+    // Target roughly one animation frame of GPU work per tile.
+    const perTile = elapsed / (this.tileGrid * this.tileGrid);
+    let grid = this.tileGrid;
+    if (perTile > 14 && grid < 16) grid *= 2;
+    else if (perTile < 2 && grid > 1) grid = Math.max(1, grid / 2);
+    this.tileGrid = grid;
   }
 
   buildProgram(vertexShader, fragmentShader) {

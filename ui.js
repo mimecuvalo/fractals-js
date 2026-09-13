@@ -427,7 +427,7 @@ class FractalUI {
     const usePert = this.currentFractal.variables['usePerturbation']
       ? this.currentFractal.variables['usePerturbation'].value : 0;
     const orbitLen = this.currentFractal.perturbation
-      ? this.currentFractal.perturbation.referenceOrbit.length : 0;
+      ? this.currentFractal.perturbation.referenceOrbitLength : 0;
 
     this.hudEl.innerHTML =
       `<span>x:</span> ${this._ddToString(cx[0], cx[1], 25)}<br>` +
@@ -539,7 +539,7 @@ class FractalUI {
     const cx = this.offsetX - 1.0;
     const cy = this.offsetY;
     const ref = p.referencePoint;
-    const orbitLen = p.referenceOrbit.length;
+    const orbitLen = p.referenceOrbitLength;
     const usePert = this.currentFractal.variables['usePerturbation'].value;
 
     const offsetToRef = Math.hypot(cx - ref.re, cy - ref.im);
@@ -565,8 +565,7 @@ class FractalUI {
 
     // Show first/last orbit points
     if (orbitLen > 0) {
-      const last = p.referenceOrbit[orbitLen - 1];
-      const lastR2 = (last.re_hi + last.re_lo) ** 2 + (last.im_hi + last.im_lo) ** 2;
+      const lastR2 = p.orbitRe(orbitLen - 1) ** 2 + p.orbitIm(orbitLen - 1) ** 2;
       console.log('Last orbit point |z|²:', lastR2.toExponential(), lastR2 > 4 ? '(escaped)' : '(bounded)');
     }
 

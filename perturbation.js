@@ -3,12 +3,11 @@
 
 class PerturbationRenderer {
   constructor() {
-    // Below this zoom the viewport is small enough that a single reference orbit
-    // approximates every pixel, so we switch from direct double-single iteration
-    // to single-float perturbation.
-    this.PERTURBATION_THRESHOLD = 1e-3;
-
-    this.referenceOrbit = [];
+    // Reference orbit, packed as the RGBA32F texture the shader samples:
+    // one texel per iteration holding (re_hi, re_lo, im_hi, im_lo).
+    this.referenceOrbit = new Float32Array(0);
+    this.referenceOrbitLength = 0;
+    this.series = { skip: 0, a: [0, 0], b: [0, 0], c: [0, 0] };
     this.referencePoint = { re: 0, im: 0 };
     this.maxRefIterations = 16384;
 
@@ -28,11 +27,17 @@ class PerturbationRenderer {
     };
 
     this._texture = null;
+    // Set whenever a new orbit lands, so the texture is only re-uploaded on change.
+    this._textureDirty = false;
   }
 
   // --- Double-double arithmetic for JS float64 ---
   // Split constant for 53-bit mantissa: 2^27 + 1
   static SPLIT = 134217729.0;
+
+  // Below this zoom the Julia viewport is narrow enough that a single reference
+  // orbit approximates every pixel (see shouldUsePerturbation).
+  static JULIA_PERTURBATION_THRESHOLD = 1e-3;
 
   ddFrom(value) {
     return { hi: value, lo: 0.0 };
@@ -79,13 +84,6 @@ class PerturbationRenderer {
     return (v && typeof v === 'object' && 'hi' in v) ? v : this.ddFrom(v);
   }
 
-  // Split a JS float64 into float32 hi/lo pair (for GPU upload)
-  splitToFloat32(value) {
-    const hi = Math.fround(value);
-    const lo = value - hi;
-    return { hi, lo };
-  }
-
   // --- Mandelbrot quick-inside tests ---
   isInMainCardioid(cx, cy) {
     const x = cx - 0.25;
@@ -106,8 +104,6 @@ class PerturbationRenderer {
     const refRe = this._asDD(centerX);
     const refIm = this._asDD(centerY);
 
-    const orbit = [];
-
     // Julia: z_0 = reference point, additive constant is the fixed juliaC.
     // Mandelbrot: z_0 = 0, additive constant is the reference point C.
     const julia = this.mode === 'julia';
@@ -118,19 +114,22 @@ class PerturbationRenderer {
 
     const target = Math.min(maxIters, this.maxRefIterations);
 
+    // Written straight into the packed texture layout. Building 16k little {re,im}
+    // objects instead used to cost more than the arithmetic did.
+    const data = new Float32Array(target * 4);
+    let length = 0;
+
     for (let i = 0; i < target; i++) {
-      // Convert orbit point to float32 hi/lo pairs for GPU texture
       const reVal = this.ddToNumber(zRe);
       const imVal = this.ddToNumber(zIm);
-      const reSplit = this.splitToFloat32(reVal);
-      const imSplit = this.splitToFloat32(imVal);
+      const reHi = Math.fround(reVal);
+      const imHi = Math.fround(imVal);
 
-      orbit.push({
-        re_hi: reSplit.hi,
-        re_lo: reSplit.lo,
-        im_hi: imSplit.hi,
-        im_lo: imSplit.lo,
-      });
+      data[i * 4 + 0] = reHi;
+      data[i * 4 + 1] = reVal - reHi;
+      data[i * 4 + 2] = imHi;
+      data[i * 4 + 3] = imVal - imHi;
+      length = i + 1;
 
       // Check escape
       const r2 = reVal * reVal + imVal * imVal;
@@ -145,16 +144,125 @@ class PerturbationRenderer {
       zIm = this.ddAdd(this.ddMul(this.ddFrom(2), zReIm), addIm);
     }
 
-    return orbit;
+    return { data, length };
   }
 
+  // Reference orbit point n, reconstituted from its float32 hi/lo pair.
+  orbitRe(n) { return this.referenceOrbit[n * 4] + this.referenceOrbit[n * 4 + 1]; }
+  orbitIm(n) { return this.referenceOrbit[n * 4 + 2] + this.referenceOrbit[n * 4 + 3]; }
+
+  // --- Series approximation ---
+  //
+  // Every pixel shares the same reference orbit, and deltaZ is a power series in that
+  // pixel's deltaC:  dz_n = A_n*d + B_n*d^2 + C_n*d^3, with
+  //     A_{n+1} = 2*Z_n*A_n + 1
+  //     B_{n+1} = 2*Z_n*B_n + A_n^2
+  //     C_{n+1} = 2*Z_n*C_n + 2*A_n*B_n
+  // Since the coefficients don't depend on the pixel, the first `skip` iterations can
+  // be evaluated once here and jumped over by every pixel on the GPU.
+  //
+  // The raw A/B/C track the derivative and grow like 2^n, overflowing float64 within a
+  // few hundred iterations, let alone the float32 uniforms they have to travel in. So
+  // they are carried pre-scaled -- a = A*zoom, b = B*zoom^2, c = C*zoom^3 -- which is
+  // just the same series re-expressed in the normalized screen coordinate
+  // u = d / zoom instead of in d. Scaled that way every term stays the size of dz
+  // itself and float32 handles them comfortably.
+  computeSeries(zoom, maxIters) {
+    const none = { skip: 0, a: [0, 0], b: [0, 0], c: [0, 0] };
+    if (this.referenceOrbitLength < 3 || this.mode === 'julia') return none;
+
+    // Largest |u| the viewport can ask for: the corner is sqrt(2), plus up to 0.25
+    // from a cached (slightly stale) reference offset. Round up for margin -- the
+    // series only has to be valid out to here.
+    const R = 1.75;
+    const R2 = R * R;
+    const R3 = R2 * R;
+
+    let ar = 0, ai = 0, br = 0, bi = 0, cr = 0, ci = 0;
+    let skip = 0;
+    let best = none;
+
+    const limit = Math.min(maxIters, this.referenceOrbitLength - 1);
+    for (let n = 0; n < limit; n++) {
+      const Zr = this.orbitRe(n);
+      const Zi = this.orbitIm(n);
+
+      const naR = 2 * (Zr * ar - Zi * ai) + zoom;
+      const naI = 2 * (Zr * ai + Zi * ar);
+      const nbR = 2 * (Zr * br - Zi * bi) + (ar * ar - ai * ai);
+      const nbI = 2 * (Zr * bi + Zi * br) + 2 * ar * ai;
+      const ncR = 2 * (Zr * cr - Zi * ci) + 2 * (ar * br - ai * bi);
+      const ncI = 2 * (Zr * ci + Zi * cr) + 2 * (ar * bi + ai * br);
+      ar = naR; ai = naI; br = nbR; bi = nbI; cr = ncR; ci = ncI;
+
+      const mA = Math.hypot(ar, ai);
+      const mB = Math.hypot(br, bi);
+      const mC = Math.hypot(cr, ci);
+      if (!isFinite(mA) || !isFinite(mB) || !isFinite(mC)) break;
+
+      // Truncation test: the first dropped term (the cubic) must be negligible
+      // against the linear one everywhere in the viewport.
+      if (!(mC * R3 < 1e-3 * mA * R)) break;
+
+      // Safety: never skip past an iteration where some pixel has already escaped,
+      // because the skip jumps over the escape test that would have caught it.
+      // Two things can put a pixel over the edge. Its own deltaZ growing large --
+      // bounded here at 2, which keeps |z| far below the escape radius. Or the
+      // reference itself heading for infinity, in which case z = Z + deltaZ escapes
+      // no matter how small deltaZ is, so the series has to stop while the reference
+      // is still inside |Z| < 2.
+      if (mA * R + mB * R2 + mC * R3 > 2.0) break;
+      const Zr1 = this.orbitRe(n + 1);
+      const Zi1 = this.orbitIm(n + 1);
+      if (Zr1 * Zr1 + Zi1 * Zi1 > 4.0) break;
+
+      skip = n + 1;
+      best = { skip, a: [ar, ai], b: [br, bi], c: [cr, ci] };
+    }
+
+    // A skip of a handful of iterations isn't worth the extra uniforms and the jump.
+    return skip >= 8 ? best : none;
+  }
+
+  // The orbit survives a pure zoom (it doesn't depend on zoom at all) but the series
+  // coefficients are scaled by powers of zoom, so they have to be rebuilt whenever
+  // the zoom or the orbit changes. Memoised because preDraw asks every frame and a
+  // 16k-term series is real work to redo for an unchanged view.
+  seriesFor(zoom, maxIters) {
+    const version = this._orbitVersion || 0;
+    const memo = this._seriesMemo;
+    if (memo && memo.zoom === zoom && memo.maxIters === maxIters && memo.version === version) {
+      return memo.series;
+    }
+    const series = this.computeSeries(zoom, maxIters);
+    this._seriesMemo = { zoom, maxIters, version, series };
+    return series;
+  }
+
+  // Pick the reference orbit for the current view.
+  //
+  // Mandelbrot: always the center. This used to grid-search up to 289 candidate
+  // points and then randomly sample 100 more, keeping whichever produced the longest
+  // orbit -- 2-60ms of double-double arithmetic on the main thread, per move.
+  // Rebasing made that search pointless: orbit length no longer affects correctness,
+  // and a reference drawn from anywhere but the center only inflates deltaC, which is
+  // the one quantity perturbation wants small.
+  //
+  // Julia: still searched, because its shader has no rebase to fall back on. There a
+  // reference that escapes before the iteration budget really does truncate every
+  // pixel that outlives it, so a long orbit is worth hunting for.
   findBestReference(centerX, centerY, zoom, maxIters, canvasWidth, canvasHeight) {
     const cRe = this._asDD(centerX);
     const cIm = this._asDD(centerY);
+
+    if (this.mode !== 'julia') {
+      this._installReference(this.calculateReferenceOrbit(cRe, cIm, zoom, maxIters), cRe, cIm);
+      return this.referenceOrbit;
+    }
+
     const stepX = (2 / Math.max(1, canvasWidth)) * zoom;
     const stepY = (2 / Math.max(1, canvasHeight)) * zoom;
-
-    const best = { orbit: [], len: 0, reDD: cRe, imDD: cIm };
+    const best = { orbit: null, len: 0, reDD: cRe, imDD: cIm };
 
     // Candidate points are carried as double-double so a reference offset from the
     // center is computed exactly. Grid/random offsets are small (~zoom) floats added
@@ -169,10 +277,8 @@ class PerturbationRenderer {
       }
     };
 
-    // Always try center first
     tryPoint(cRe, cIm);
 
-    // Grid search across viewport (if center isn't good enough)
     if (best.len < maxIters) {
       const range = 8;
       for (let dx = -range; dx <= range && best.len < maxIters; dx++) {
@@ -184,7 +290,6 @@ class PerturbationRenderer {
       }
     }
 
-    // If grid didn't find a long enough orbit, try random sampling at wider distances
     if (best.len < maxIters) {
       for (let attempt = 0; attempt < 100 && best.len < maxIters; attempt++) {
         const scale = 1 + attempt * 5;
@@ -194,15 +299,21 @@ class PerturbationRenderer {
       }
     }
 
-    const reNum = this.ddToNumber(best.reDD);
-    const imNum = this.ddToNumber(best.imDD);
-    console.log(`[ref] orbit=${best.len}/${maxIters} at (${reNum.toExponential(6)}, ${imNum.toExponential(6)})`);
+    this._installReference(best.orbit, best.reDD, best.imDD);
+    return this.referenceOrbit;
+  }
 
-    this.referenceOrbit = best.orbit;
-    // Keep numeric re/im for display/legacy readers plus the DD pair for precise
-    // reference-offset computation.
-    this.referencePoint = { re: reNum, im: imNum, reDD: best.reDD, imDD: best.imDD };
-    return best.orbit;
+  _installReference(orbit, reDD, imDD) {
+    this.referenceOrbit = orbit.data;
+    this.referenceOrbitLength = orbit.length;
+    this._textureDirty = true;
+    this._orbitVersion = (this._orbitVersion || 0) + 1;
+    this.referencePoint = {
+      re: this.ddToNumber(reDD),
+      im: this.ddToNumber(imDD),
+      reDD,
+      imDD,
+    };
   }
 
   ensureReference(centerX, centerY, zoom, maxIters, canvasWidth, canvasHeight) {
@@ -236,48 +347,135 @@ class PerturbationRenderer {
       this.mode === 'julia' &&
       (this._last.juliaCRe !== this.juliaC.re || this._last.juliaCIm !== this.juliaC.im);
 
-    if (!movedFar && !wantMoreIters && !juliaCChanged && this.referenceOrbit.length > 0) {
+    if (!movedFar && !wantMoreIters && !juliaCChanged && this.referenceOrbitLength > 0) {
       return;
     }
 
-    this.findBestReference(cRe, cIm, zoom, maxIters, canvasWidth, canvasHeight);
+    // Compute inline when we can't afford to draw a frame without the new orbit:
+    //  - the first reference of the session, where there is nothing valid to draw
+    //    with at all and going async would flash one frame of the fallback path;
+    //  - Julia, which has no rebasing in its shader, so a stale reference really is
+    //    wrong rather than merely suboptimal;
+    //  - no worker available (file:// origins, mainly).
+    // Julia's orbits are short enough that computing them inline is not felt.
+    if (this.referenceOrbitLength === 0 || this.mode === 'julia' || !this._ensureWorker()) {
+      this.findBestReference(cRe, cIm, zoom, maxIters, canvasWidth, canvasHeight);
+      this.series = this.computeSeries(zoom, maxIters);
+      this._rememberRequest(cRe, cIm, maxIters);
+      return;
+    }
+
+    // Otherwise hand the work to the worker and keep drawing with the orbit we
+    // already have. Rebasing is what makes that safe: a slightly stale reference
+    // only means a slightly larger deltaC, not a wrong picture. The swap happens in
+    // _onWorkerResult, which asks for a redraw.
+    this._rememberRequest(cRe, cIm, maxIters);
+    this._dispatch(cRe, cIm, zoom, maxIters);
+  }
+
+  _rememberRequest(cRe, cIm, maxIters) {
     this._last.reDD = cRe;
     this._last.imDD = cIm;
     this._last.maxIters = maxIters;
-    this._last.orbitLen = this.referenceOrbit.length;
+    this._last.orbitLen = this.referenceOrbitLength;
     this._last.juliaCRe = this.juliaC.re;
     this._last.juliaCIm = this.juliaC.im;
   }
 
+  // Lazily create the worker. Returns false when workers aren't usable at all
+  // (opening the page over file://, for one), in which case callers fall back to
+  // computing on the main thread.
+  _ensureWorker() {
+    if (this._worker !== undefined) return this._worker !== null;
+    try {
+      this._worker = new Worker('reference-worker.js');
+      this._worker.onmessage = (evt) => this._onWorkerResult(evt.data);
+      this._worker.onerror = () => { this._worker = null; };
+    } catch (e) {
+      this._worker = null;
+    }
+    return this._worker !== null;
+  }
+
+  _dispatch(cRe, cIm, zoom, maxIters) {
+    this._jobId = (this._jobId || 0) + 1;
+    // Only the newest request matters; anything older is about to be superseded.
+    this._inFlightId = this._jobId;
+    this._worker.postMessage({
+      id: this._jobId,
+      mode: this.mode,
+      juliaC: this.juliaC,
+      maxRefIterations: this.maxRefIterations,
+      centerRe: cRe,
+      centerIm: cIm,
+      zoom,
+      maxIters,
+    });
+  }
+
+  _onWorkerResult(msg) {
+    // A newer request has already gone out; this result is stale.
+    if (msg.id !== this._inFlightId) return;
+
+    this.referenceOrbit = msg.data;
+    this.referenceOrbitLength = msg.length;
+    this.series = msg.series;
+    this._textureDirty = true;
+    this._orbitVersion = (this._orbitVersion || 0) + 1;
+    this.referencePoint = {
+      re: this.ddToNumber(msg.centerRe),
+      im: this.ddToNumber(msg.centerIm),
+      reDD: msg.centerRe,
+      imDD: msg.centerIm,
+    };
+    this._last.orbitLen = msg.length;
+
+    if (this.onReady) this.onReady();
+  }
+
+  // Mandelbrot perturbation is always on.
+  //
+  // It used to be gated behind a zoom threshold, because a single reference orbit
+  // could only approximate a narrow viewport. Rebasing removed that constraint: a
+  // pixel whose delta outgrows the reference just restarts at orbit index 0, so
+  // accuracy stopped depending on the viewport being small or the reference being
+  // long. Measured against a float64 CPU reference, perturbation is now more
+  // accurate than the double-single path at every zoom level and 1.1-2.4x faster,
+  // so the double-single path survives only as the fallback for when there is no
+  // usable reference orbit at all.
+  //
+  // Julia cannot rebase: its reference orbit starts at the reference point rather
+  // than at 0, so the substitution `deltaZ = z` that makes a rebase exact for
+  // Mandelbrot would instead need `z - Z_ref[0]`, a difference of two O(1) floats
+  // that loses all of its significant bits in float32. Until that path grows a
+  // rebase of its own it keeps the old zoom gate: only switch to perturbation once
+  // the viewport is narrow enough for one reference to approximate every pixel.
   shouldUsePerturbation(zoom) {
-    return zoom < this.PERTURBATION_THRESHOLD;
+    if (this.mode === 'julia') {
+      return zoom < PerturbationRenderer.JULIA_PERTURBATION_THRESHOLD;
+    }
+    return true;
   }
 
   // --- GPU texture upload ---
   createOrUpdateTexture(gl) {
-    if (this.referenceOrbit.length === 0) return null;
-
-    // Pack orbit data: each texel = (re_hi, re_lo, im_hi, im_lo)
-    const data = new Float32Array(this.referenceOrbit.length * 4);
-    for (let i = 0; i < this.referenceOrbit.length; i++) {
-      const p = this.referenceOrbit[i];
-      data[i * 4 + 0] = p.re_hi;
-      data[i * 4 + 1] = p.re_lo;
-      data[i * 4 + 2] = p.im_hi;
-      data[i * 4 + 3] = p.im_lo;
-    }
-
+    if (this.referenceOrbitLength === 0) return null;
     if (!this._texture) {
       this._texture = gl.createTexture();
     }
+    if (!this._textureDirty) {
+      gl.bindTexture(gl.TEXTURE_2D, this._texture);
+      return this._texture;
+    }
+    this._textureDirty = false;
+
     gl.bindTexture(gl.TEXTURE_2D, this._texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F,
-      this.referenceOrbit.length, 1, 0, gl.RGBA, gl.FLOAT, data);
+      this.referenceOrbitLength, 1, 0, gl.RGBA, gl.FLOAT, this.referenceOrbit);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
     return this._texture;
   }
 }

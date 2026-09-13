@@ -28,6 +28,13 @@ class Mandelbrot extends Fractal {
       refOrbitTexture: { type: '1i',  value: 0 },
       refOffsetX:      { type: '1f',  value: 0.0 },
       refOffsetY:      { type: '1f',  value: 0.0 },
+      // Series approximation: skip this many iterations, starting from the
+      // pre-computed deltaZ that seriesA/B/C evaluate to.
+      seriesSkip:      { type: '1i',  value: 0 },
+      seriesA:         { type: '2fv', value: [0.0, 0.0] },
+      seriesB:         { type: '2fv', value: [0.0, 0.0] },
+      seriesC:         { type: '2fv', value: [0.0, 0.0] },
+      refOffsetScaled: { type: '2fv', value: [0.0, 0.0] },
     };
 
     this.buffer = [
@@ -45,6 +52,9 @@ class Mandelbrot extends Fractal {
     this.centerReShift = -1;
 
     this.perturbation = new PerturbationRenderer();
+    // A reference computed off-thread lands after the frame that asked for it,
+    // so repaint when it arrives.
+    this.perturbation.onReady = () => this.draw();
 
     this.buildProgram(this.vertexShader, this.doublePrecisionMath + this.fragmentShader);
     this.assignAttribOffsets(0, 3, { position: 0 });
@@ -97,8 +107,10 @@ class Mandelbrot extends Fractal {
     p.ensureReference(cxDD, cyDD, zoomVal, iterations, this.fullSize, this.fullSize);
 
     const tex = p.createOrUpdateTexture(this.gl);
-    const orbitLen = p.referenceOrbit.length;
-    if (tex && orbitLen > 0) {
+    const orbitLen = p.referenceOrbitLength;
+    // Rebasing reads reference points m and m+1 each step, so it needs at least
+    // two stored orbit points to be well-defined.
+    if (tex && orbitLen >= 2) {
       this.variables['usePerturbation'].value = 1;
       this.variables['refOrbitLength'].value = orbitLen;
 
@@ -108,12 +120,26 @@ class Mandelbrot extends Fractal {
       this.variables['refOffsetX'].value = p.ddToNumber(p.ddSub(cxDD, ref.reDD));
       this.variables['refOffsetY'].value = p.ddToNumber(p.ddSub(cyDD, ref.imDD));
 
+      // The shader works in the normalized screen coordinate u = deltaC / zoom, so
+      // hand it the reference offset in those same units.
+      const offX = this.variables['refOffsetX'].value;
+      const offY = this.variables['refOffsetY'].value;
+      this.variables['refOffsetScaled'].value = [offX / zoomVal, offY / zoomVal];
+
+      // Series approximation lets every pixel jump the first `skip` iterations.
+      const series = p.seriesFor(zoomVal, iterations);
+      this.variables['seriesSkip'].value = series.skip;
+      this.variables['seriesA'].value = series.a;
+      this.variables['seriesB'].value = series.b;
+      this.variables['seriesC'].value = series.c;
+
       const gl = this.gl;
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, tex);
     } else {
       // No usable reference — fall back to direct iteration rather than black.
       this.variables['usePerturbation'].value = 0;
+      this.variables['seriesSkip'].value = 0;
     }
   }
 
@@ -155,6 +181,11 @@ class Mandelbrot extends Fractal {
     uniform highp sampler2D refOrbitTexture;
     uniform float refOffsetX;
     uniform float refOffsetY;
+    uniform int seriesSkip;
+    uniform vec2 seriesA;
+    uniform vec2 seriesB;
+    uniform vec2 seriesC;
+    uniform vec2 refOffsetScaled;
 
     // Color parameters
     float R = 0.0;
@@ -203,49 +234,94 @@ class Mandelbrot extends Fractal {
       return -1.0;
     }
 
-    // Perturbation iteration (used at deep zoom levels).
+    // Perturbation iteration with rebasing (Zhuoran's method), used at deep zoom.
     //
     // Single-precision float32 delta, following the technique from mandelset
     // (iskandarov-egor/mandelset). The perturbation delta (deltaC, deltaZ) stays
-    // tiny — magnitude ~= zoom — so float32's huge *exponent* range (down to ~1e-38)
+    // tiny -- magnitude ~= zoom -- so float32's huge *exponent* range (down to ~1e-38)
     // sets the reachable depth, while the ~1e-7 relative mantissa only ever has to
     // resolve sub-pixel differences. This reaches ~1e-30 zoom and is ~10x cheaper
     // than double-single, whose hard wall sits at ~2^-48 (3.5e-15) because a tiny
     // deltaZ vanishes when stored relative to the O(1) reference.
+    //
+    // Plain perturbation walks the reference in lockstep with the pixel and fails two
+    // ways. If the reference escapes before the iteration budget, every pixel that outlives it
+    // gets reported as interior -- a solid black screen. And deltaZ can grow until it
+    // dwarfs the reference, at which point Z_ref + deltaZ loses its significant bits
+    // and the pixel glitches into a wrong-coloured blob.
+    //
+    // Rebasing fixes both with one test: whenever |z| < |deltaZ|, or the reference
+    // runs out, restart at orbit index 0 and carry the full z across as the new
+    // deltaZ. That substitution is exact here because the Mandelbrot reference starts
+    // at Z_ref[0] == 0, so z == Z_ref[0] + z identically. Correctness therefore no
+    // longer depends on the reference lasting the whole render.
     float perturbIterations(vec2 p) {
-      // deltaC = screenCoord * zoom + refOffset. zoom.x is the high word (the low
-      // word is negligible at float32); refOffset is the center->reference vector.
-      float dcx = p.x * zoom.x + refOffsetX;
-      float dcy = p.y * zoom.x + refOffsetY;
+      // Work in the normalized screen coordinate u, so that deltaC = u * zoom
+      // exactly. refOffsetScaled is the center->reference vector in the same units.
+      vec2 u = p + refOffsetScaled;
+      float dcx = u.x * zoom.x;
+      float dcy = u.y * zoom.x;
 
       float dx = 0.0;  // deltaZ.re
       float dy = 0.0;  // deltaZ.im
+      int m = 0;       // index into the reference orbit, reset by each rebase
 
-      for (int i = 0; i < MAX_ITERATIONS; i++) {
-        if (i >= iterations || i >= refOrbitLength) break;
+      // Series approximation: the first seriesSkip iterations are identical in form
+      // for every pixel, so the CPU solved them once as a cubic in u and we drop
+      // straight into the orbit at that point. seriesA/B/C are pre-scaled by powers
+      // of zoom (see computeSeries), which is what keeps them inside float32.
+      if (seriesSkip > 0) {
+        vec2 u2 = complexMul(u, u);
+        vec2 u3 = complexMul(u2, u);
+        vec2 d = complexMul(seriesA, u) + complexMul(seriesB, u2) + complexMul(seriesC, u3);
+        dx = d.x;
+        dy = d.y;
+        m = seriesSkip;
+      }
 
-        // Reference orbit point Z_i. Texel packs (re_hi, re_lo, im_hi, im_lo);
-        // the single-float reference is just the high word of each component.
-        vec4 refTexel = texelFetch(refOrbitTexture, ivec2(i, 0), 0);
-        float Zx = refTexel.x;
-        float Zy = refTexel.z;
+      // Z_ref[m], carried in registers so the loop costs one texel fetch per
+      // iteration rather than two.
+      vec4 startTexel = texelFetch(refOrbitTexture, ivec2(m, 0), 0);
+      float Zx = startTexel.x;
+      float Zy = startTexel.z;
 
-        // Total Z = Z_ref + deltaZ. Adding tiny deltaZ to the O(1) reference here
+      for (int i = seriesSkip; i < MAX_ITERATIONS; i++) {
+        if (i >= iterations) break;
+
+        // Perturbation recurrence: deltaZ' = 2*Z_ref*deltaZ + deltaZ^2 + deltaC
+        // (kept entirely in the small-magnitude delta domain -- never rounded
+        // against the O(1) reference).
+        float ndx = 2.0 * (Zx * dx - Zy * dy) + (dx * dx - dy * dy) + dcx;
+        float ndy = 2.0 * (Zx * dy + Zy * dx) + (2.0 * dx * dy) + dcy;
+        dx = ndx;
+        dy = ndy;
+
+        // Advance the reference. Texel packs (re_hi, re_lo, im_hi, im_lo); the
+        // single-float reference is just the high word of each component.
+        m++;
+        vec4 refTexel = texelFetch(refOrbitTexture, ivec2(m, 0), 0);
+        Zx = refTexel.x;
+        Zy = refTexel.z;
+
+        // Total z = Z_ref[m] + deltaZ. Adding tiny deltaZ to the O(1) reference here
         // is safe: it only matters once deltaZ has grown to O(1) near escape.
         float zx = Zx + dx;
         float zy = Zy + dy;
-        float dotZZ = zx * zx + zy * zy;
-        if (dotZZ > blobSize) {
-          return float(i) + 1.0 - log2(0.5 * log2(max(1e-20, dotZZ)));
+        float zz = zx * zx + zy * zy;
+        if (zz > blobSize) {
+          return float(i + 1) + 1.0 - log2(0.5 * log2(max(1e-20, zz)));
         }
 
-        // Perturbation recurrence: deltaZ' = 2*Z_ref*deltaZ + deltaZ^2 + deltaC
-        // (kept entirely in the small-magnitude delta domain — never rounded
-        // against the O(1) reference).
-        float new_dx = 2.0 * (Zx * dx - Zy * dy) + (dx * dx - dy * dy) + dcx;
-        float new_dy = 2.0 * (Zx * dy + Zy * dx) + (2.0 * dx * dy) + dcy;
-        dx = new_dx;
-        dy = new_dy;
+        // Rebase when the reference has stopped carrying information (|z| < |deltaZ|,
+        // so the sum is mostly delta anyway) or when advancing would run off the end
+        // of the stored orbit. Restarting at index 0 needs no fetch: Z_ref[0] == 0.
+        if (zz < dx * dx + dy * dy || m >= refOrbitLength - 1) {
+          dx = zx;
+          dy = zy;
+          m = 0;
+          Zx = 0.0;
+          Zy = 0.0;
+        }
       }
       return -1.0;
     }

@@ -35,6 +35,7 @@ class Julia extends Fractal {
     // iterates z^2 + c with c fixed (the `center` uniform).
     this.perturbation = new PerturbationRenderer();
     this.perturbation.mode = 'julia';
+    this.perturbation.onReady = () => this.draw();
 
     this.buildProgram(this.vertexShader, this.doublePrecisionMath + this.fragmentShader);
     this.assignAttribOffsets(0, 2, { p: 0 });
@@ -69,7 +70,7 @@ class Julia extends Fractal {
     p.ensureReference(czDD, cwDD, zoomVal, iterations, this.fullSize, this.fullSize);
 
     const tex = p.createOrUpdateTexture(this.gl);
-    const orbitLen = p.referenceOrbit.length;
+    const orbitLen = p.referenceOrbitLength;
     if (tex && orbitLen > 0) {
       this.variables['usePerturbation'].value = 1;
       this.variables['refOrbitLength'].value = orbitLen;
