@@ -127,6 +127,15 @@ class Julia extends Fractal {
     in vec2 coord;
     out vec4 fragColor;
 
+    // Palette scale. The colour ramp below is expressed in units of
+    // escapeValue/COLOR_SCALE, so this - and NOT the iteration budget - decides which
+    // escape times land in the red/yellow/green/blue/white bands. Normalising by the
+    // iteration count instead would repaint the whole image whenever that
+    // budget changed (e.g. 128 on first draw, 2000 after the first zoom), which is
+    // exactly the "colours jump on the first zoom" bug. Anything slower than
+    // COLOR_SCALE saturates to white, matching the old iterations=128 look.
+    const float COLOR_SCALE = 128.0;
+
     // Perturbation uniforms (deep-zoom path)
     uniform int usePerturbation;
     uniform int refOrbitLength;
@@ -219,7 +228,7 @@ class Julia extends Fractal {
           if (y >= antiAlias) break;
           vec2 cor = coord + vec2(x, y) * ard;
           float raw = (usePerturbation == 1) ? niterPerturb(cor) : niterDP(cor);
-          float a = raw / float(iterations);
+          float a = raw / COLOR_SCALE;
           // Accumulate in linear space for gamma-correct blending
           vec3 srgb = color(a);
           v += pow(max(srgb, 0.0), vec3(2.2));
